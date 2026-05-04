@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import { Wind, Thermometer, Droplets, Navigation, Star, MapPin, Fish, AlertTriangle, Plus, Minus, Search, X } from 'lucide-react';
 import { fishingSpots, protectedZones } from '../data/spots';
@@ -15,32 +15,26 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
 });
 
+const ICON_CACHE = new Map<string, L.DivIcon>();
+
 const createSpotIcon = (waterType: string, isFav: boolean) => {
+  const key = `${waterType}-${isFav}`;
+  if (ICON_CACHE.has(key)) return ICON_CACHE.get(key)!;
+
   const colors: Record<string, string> = {
     salt: '#0284c7',
     fresh: '#16a34a',
     brackish: '#7c3aed',
   };
   const color = colors[waterType] || '#0284c7';
-  const star = isFav ? '⭐' : '';
-  return L.divIcon({
+  const icon = L.divIcon({
     className: '',
-    html: `<div style="
-      background: white;
-      border: 3px solid ${color};
-      border-radius: 50%;
-      width: 38px;
-      height: 38px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 16px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-      position: relative;
-    ">🎣${star}</div>`,
-    iconSize: [38, 38],
-    iconAnchor: [19, 19],
+    html: `<div style="background:white;border:3px solid ${color};border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 2px 6px rgba(0,0,0,0.2)">${isFav ? '⭐' : '🎣'}</div>`,
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
   });
+  ICON_CACHE.set(key, icon);
+  return icon;
 };
 
 const MOCK_WEATHER: WeatherData = {
@@ -105,6 +99,18 @@ function LocationButton() {
       <Navigation className="w-5 h-5" />
     </button>
   );
+}
+
+// Ensures Leaflet recalculates tile layout after mount
+function InvalidateSize() {
+  const map = useMapEvents({
+    load: () => map.invalidateSize(),
+  });
+  useEffect(() => {
+    const t = setTimeout(() => map.invalidateSize(), 100);
+    return () => clearTimeout(t);
+  }, [map]);
+  return null;
 }
 
 // Fly-to controller – lives inside MapContainer so it has map access
@@ -282,18 +288,22 @@ export default function MapPage() {
       </div>
 
       {/* Map */}
-      <div className="flex-1 relative">
+      <div className="flex-1 relative min-h-0">
         <MapContainer
           center={[56.26, 9.5]}
           zoom={7}
-          className="w-full h-full"
+          style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}
           zoomControl={false}
+          preferCanvas={true}
         >
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            maxZoom={19}
+            keepBuffer={2}
           />
 
+          <InvalidateSize />
           <FlyTo target={flyTarget} />
           <ZoomControls />
           <LocationButton />
