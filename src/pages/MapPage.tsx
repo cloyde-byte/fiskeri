@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { Wind, Thermometer, Droplets, Navigation, Star, MapPin, Fish, AlertTriangle } from 'lucide-react';
+import { Wind, Thermometer, Droplets, Navigation, Star, MapPin, Fish, AlertTriangle, Plus, Minus, Search, X } from 'lucide-react';
 import { fishingSpots, protectedZones } from '../data/spots';
 import { getFishById } from '../data/fish';
 import { useAuth } from '../context/AuthContext';
@@ -56,6 +56,37 @@ const MOCK_WEATHER: WeatherData = {
   pressure: 1018,
 };
 
+interface NominatimResult {
+  lat: string;
+  lon: string;
+  display_name: string;
+  name: string;
+}
+
+// Zoom controls component
+function ZoomControls() {
+  const map = useMap();
+  return (
+    <div className="absolute bottom-48 right-4 z-[1000] flex flex-col gap-1">
+      <button
+        onClick={() => map.zoomIn()}
+        className="w-12 h-12 bg-white rounded-2xl shadow-lg flex items-center justify-center text-ocean-600 hover:bg-ocean-50 transition-colors active:scale-95"
+        aria-label="Zoom ind"
+      >
+        <Plus className="w-6 h-6" strokeWidth={2.5} />
+      </button>
+      <button
+        onClick={() => map.zoomOut()}
+        className="w-12 h-12 bg-white rounded-2xl shadow-lg flex items-center justify-center text-ocean-600 hover:bg-ocean-50 transition-colors active:scale-95"
+        aria-label="Zoom ud"
+      >
+        <Minus className="w-6 h-6" strokeWidth={2.5} />
+      </button>
+    </div>
+  );
+}
+
+// Location button
 function LocationButton() {
   const map = useMap();
   const [located, setLocated] = useState(false);
@@ -76,6 +107,116 @@ function LocationButton() {
   );
 }
 
+// Fly-to controller – lives inside MapContainer so it has map access
+function FlyTo({ target }: { target: { lat: number; lng: number } | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (target) map.flyTo([target.lat, target.lng], 13, { duration: 1.2 });
+  }, [target, map]);
+  return null;
+}
+
+// Address search bar (rendered outside MapContainer as an overlay)
+function SearchBar({ onResult }: { onResult: (lat: number, lng: number, name: string) => void }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<NominatimResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const search = async (q: string) => {
+    if (q.length < 2) { setResults([]); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&countrycodes=dk&format=json&limit=5&addressdetails=0`,
+        { headers: { 'Accept-Language': 'da' } }
+      );
+      const data: NominatimResult[] = await res.json();
+      setResults(data);
+    } catch {
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setQuery(val);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => search(val), 350);
+  };
+
+  const handleSelect = (r: NominatimResult) => {
+    const name = r.display_name.split(',')[0];
+    setQuery(name);
+    setResults([]);
+    setOpen(false);
+    onResult(parseFloat(r.lat), parseFloat(r.lon), name);
+  };
+
+  const handleClear = () => {
+    setQuery('');
+    setResults([]);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div className="absolute top-3 left-4 right-4 z-[1000]">
+      <div className="relative">
+        <div className="flex items-center bg-white rounded-2xl shadow-lg border border-slate-100 overflow-hidden">
+          <Search className="w-4 h-4 text-slate-400 ml-3 shrink-0" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={handleChange}
+            onFocus={() => setOpen(true)}
+            placeholder="Søg adresse eller by..."
+            className="flex-1 px-3 py-3 text-sm text-slate-800 placeholder-slate-400 outline-none bg-transparent"
+          />
+          {loading && (
+            <div className="w-4 h-4 border-2 border-ocean-400 border-t-transparent rounded-full animate-spin mr-3" />
+          )}
+          {query && !loading && (
+            <button onClick={handleClear} className="p-2 mr-1 text-slate-400 hover:text-slate-600">
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {open && results.length > 0 && (
+          <div className="absolute top-full mt-1 left-0 right-0 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden">
+            {results.map((r, i) => {
+              const parts = r.display_name.split(', ');
+              const primary = parts[0];
+              const secondary = parts.slice(1, 3).join(', ');
+              return (
+                <button
+                  key={i}
+                  onClick={() => handleSelect(r)}
+                  className="w-full text-left px-4 py-3 hover:bg-ocean-50 transition-colors border-b border-slate-50 last:border-0"
+                >
+                  <div className="text-sm font-medium text-slate-800 flex items-center gap-2">
+                    <MapPin className="w-3.5 h-3.5 text-ocean-500 shrink-0" />
+                    {primary}
+                  </div>
+                  {secondary && (
+                    <div className="text-xs text-slate-400 mt-0.5 ml-5">{secondary}</div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 type FilterType = 'all' | 'salt' | 'fresh' | 'brackish';
 
 export default function MapPage() {
@@ -84,11 +225,7 @@ export default function MapPage() {
   const [filter, setFilter] = useState<FilterType>('all');
   const [showZones, setShowZones] = useState(true);
   const [weather] = useState<WeatherData>(MOCK_WEATHER);
-
-  useEffect(() => {
-    // In a real app, fetch DMI weather API here
-    // fetch(`https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?...`)
-  }, []);
+  const [flyTarget, setFlyTarget] = useState<{ lat: number; lng: number } | null>(null);
 
   const filteredSpots = filter === 'all' ? fishingSpots : fishingSpots.filter(s => s.waterType === filter);
 
@@ -150,12 +287,16 @@ export default function MapPage() {
           center={[56.26, 9.5]}
           zoom={7}
           className="w-full h-full"
-          zoomControl={true}
+          zoomControl={false}
         >
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
+
+          <FlyTo target={flyTarget} />
+          <ZoomControls />
+          <LocationButton />
 
           {/* Protected zones */}
           {showZones && protectedZones.map(zone => (
@@ -210,9 +351,10 @@ export default function MapPage() {
               </Popup>
             </Marker>
           ))}
-
-          <LocationButton />
         </MapContainer>
+
+        {/* Search bar overlay */}
+        <SearchBar onResult={(lat, lng) => setFlyTarget({ lat, lng })} />
 
         {/* Spot detail panel */}
         {selectedSpot && (
