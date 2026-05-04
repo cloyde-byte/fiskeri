@@ -101,19 +101,6 @@ function LocationButton() {
   );
 }
 
-// Watches container size via ResizeObserver and keeps Leaflet in sync
-function MapSizer() {
-  const map = useMap();
-  useEffect(() => {
-    const container = map.getContainer();
-    map.invalidateSize();
-    const ro = new ResizeObserver(() => map.invalidateSize());
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, [map]);
-  return null;
-}
-
 // Fly-to controller – lives inside MapContainer so it has map access
 function FlyTo({ target }: { target: { lat: number; lng: number } | null }) {
   const map = useMap();
@@ -233,6 +220,19 @@ export default function MapPage() {
   const [showZones, setShowZones] = useState(true);
   const [weather] = useState<WeatherData>(MOCK_WEATHER);
   const [flyTarget, setFlyTarget] = useState<{ lat: number; lng: number } | null>(null);
+  const mapWrapperRef = useRef<HTMLDivElement>(null);
+  const [mapHeight, setMapHeight] = useState(0);
+
+  useEffect(() => {
+    const el = mapWrapperRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      setMapHeight(entries[0].contentRect.height);
+    });
+    ro.observe(el);
+    setMapHeight(el.offsetHeight);
+    return () => ro.disconnect();
+  }, []);
 
   const filteredSpots = filter === 'all' ? fishingSpots : fishingSpots.filter(s => s.waterType === filter);
 
@@ -289,11 +289,12 @@ export default function MapPage() {
       </div>
 
       {/* Map */}
-      <div className="flex-1 relative min-h-0">
+      <div ref={mapWrapperRef} className="flex-1 relative min-h-0">
+        {mapHeight > 0 && (
         <MapContainer
           center={[56.26, 9.5]}
           zoom={7}
-          style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}
+          style={{ width: '100%', height: mapHeight, position: 'absolute', top: 0, left: 0 }}
           zoomControl={false}
           preferCanvas={true}
         >
@@ -304,7 +305,6 @@ export default function MapPage() {
             keepBuffer={2}
           />
 
-          <MapSizer />
           <FlyTo target={flyTarget} />
           <ZoomControls />
           <LocationButton />
@@ -363,6 +363,7 @@ export default function MapPage() {
             </Marker>
           ))}
         </MapContainer>
+        )}
 
         {/* Search bar overlay */}
         <SearchBar onResult={(lat, lng) => setFlyTarget({ lat, lng })} />
