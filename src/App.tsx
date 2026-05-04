@@ -11,8 +11,8 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <div className="flex flex-col h-full max-w-lg mx-auto bg-white shadow-xl overflow-hidden" style={{ maxHeight: '100svh' }}>
-          <main className="flex-1 overflow-hidden flex flex-col">
+        <div className="flex flex-col max-w-lg mx-auto bg-white shadow-xl overflow-hidden" style={{ height: '100svh' }}>
+          <main className="flex-1 min-h-0 overflow-hidden flex flex-col">
             <Routes>
               <Route path="/" element={<MapPage />} />
               <Route path="/fiskeguide" element={<FiskeguidePage />} />

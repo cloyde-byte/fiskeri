@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Wind, Thermometer, Droplets, Navigation, Star, MapPin, Fish, AlertTriangle, Plus, Minus, Search, X } from 'lucide-react';
 import { fishingSpots, protectedZones } from '../data/spots';
@@ -101,14 +101,15 @@ function LocationButton() {
   );
 }
 
-// Ensures Leaflet recalculates tile layout after mount
-function InvalidateSize() {
-  const map = useMapEvents({
-    load: () => map.invalidateSize(),
-  });
+// Watches container size via ResizeObserver and keeps Leaflet in sync
+function MapSizer() {
+  const map = useMap();
   useEffect(() => {
-    const t = setTimeout(() => map.invalidateSize(), 100);
-    return () => clearTimeout(t);
+    const container = map.getContainer();
+    map.invalidateSize();
+    const ro = new ResizeObserver(() => map.invalidateSize());
+    ro.observe(container);
+    return () => ro.disconnect();
   }, [map]);
   return null;
 }
@@ -303,7 +304,7 @@ export default function MapPage() {
             keepBuffer={2}
           />
 
-          <InvalidateSize />
+          <MapSizer />
           <FlyTo target={flyTarget} />
           <ZoomControls />
           <LocationButton />
