@@ -57,6 +57,10 @@ export default function MapPage() {
   const [center, setCenter] = useState<[number, number]>([56.26, 9.5]);
   const [zoom, setZoom] = useState(7);
 
+  // Measure wrapper so pigeon-maps gets explicit pixel dimensions
+  const mapWrapperRef = useRef<HTMLDivElement>(null);
+  const [mapDims, setMapDims] = useState({ width: 0, height: 0 });
+
   // Search
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<NominatimResult[]>([]);
@@ -113,6 +117,18 @@ export default function MapPage() {
     });
   };
 
+  useEffect(() => {
+    const el = mapWrapperRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      setMapDims({ width: Math.round(width), height: Math.round(height) });
+    });
+    ro.observe(el);
+    setMapDims({ width: el.offsetWidth, height: el.offsetHeight });
+    return () => ro.disconnect();
+  }, []);
+
   // Close search dropdown when clicking outside
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -123,7 +139,7 @@ export default function MapPage() {
   }, []);
 
   return (
-    <div className="relative w-full h-full flex flex-col">
+    <div className="relative w-full flex-1 min-h-0 flex flex-col">
       {/* Weather bar */}
       <div className="bg-gradient-to-r from-ocean-600 to-ocean-500 text-white px-4 py-2 flex items-center gap-4 text-sm overflow-x-auto shrink-0">
         <span className="text-lg">{weather.icon}</span>
@@ -163,10 +179,13 @@ export default function MapPage() {
       </div>
 
       {/* Map area */}
-      <div className="flex-1 relative min-h-0">
+      <div ref={mapWrapperRef} className="flex-1 relative min-h-0" style={{ overflow: 'hidden' }}>
+        {mapDims.height > 0 && (
         <Map
           center={center}
           zoom={zoom}
+          width={mapDims.width}
+          height={mapDims.height}
           onBoundsChanged={({ center: c, zoom: z }) => { setCenter(c); setZoom(z); }}
           attribution={false}
           animate
@@ -216,6 +235,7 @@ export default function MapPage() {
             </Overlay>
           ))}
         </Map>
+        )}
 
         {/* Search bar */}
         <div className="absolute top-3 left-4 right-4 z-50" data-search>
