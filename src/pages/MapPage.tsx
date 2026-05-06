@@ -31,16 +31,22 @@ function spotColor(waterType: string) {
   return '#7c3aed';
 }
 
-// Convert our [lat, lng] zone coords to GeoJSON [lng, lat] Polygon feature
+// Convert our [lat, lng] zone coords to GeoJSON FeatureCollection with [lng, lat] polygon
 function zoneToGeoJson(coords: [number, number][]) {
+  const ring = [
+    ...coords.map(([lat, lng]) => [lng, lat] as [number, number]),
+    [coords[0][1], coords[0][0]] as [number, number],
+  ];
   return {
-    type: 'Feature' as const,
-    properties: {},
-    geometry: {
-      type: 'Polygon',
-      coordinates: [[...coords.map(([lat, lng]) => [lng, lat] as [number, number]),
-                     [coords[0][1], coords[0][0]] as [number, number]]],
-    },
+    type: 'FeatureCollection' as const,
+    features: [{
+      type: 'Feature' as const,
+      properties: {},
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [ring],
+      },
+    }],
   };
 }
 
