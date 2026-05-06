@@ -1,47 +1,10 @@
-import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet';
-import L from 'leaflet';
-import { Wind, Thermometer, Droplets, Navigation, Star, MapPin, Fish, AlertTriangle } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Map, Overlay, GeoJson } from 'pigeon-maps';
+import { Wind, Thermometer, Droplets, Navigation, Star, MapPin, Fish, AlertTriangle, Plus, Minus, Search, X } from 'lucide-react';
 import { fishingSpots, protectedZones } from '../data/spots';
 import { getFishById } from '../data/fish';
 import { useAuth } from '../context/AuthContext';
 import type { FishingSpot, WeatherData } from '../types';
-
-// Fix default marker icons
-delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-});
-
-const createSpotIcon = (waterType: string, isFav: boolean) => {
-  const colors: Record<string, string> = {
-    salt: '#0284c7',
-    fresh: '#16a34a',
-    brackish: '#7c3aed',
-  };
-  const color = colors[waterType] || '#0284c7';
-  const star = isFav ? '⭐' : '';
-  return L.divIcon({
-    className: '',
-    html: `<div style="
-      background: white;
-      border: 3px solid ${color};
-      border-radius: 50%;
-      width: 38px;
-      height: 38px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 16px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-      position: relative;
-    ">🎣${star}</div>`,
-    iconSize: [38, 38],
-    iconAnchor: [19, 19],
-  });
-};
 
 const MOCK_WEATHER: WeatherData = {
   location: 'Sjælland',
@@ -56,24 +19,35 @@ const MOCK_WEATHER: WeatherData = {
   pressure: 1018,
 };
 
-function LocationButton() {
-  const map = useMap();
-  const [located, setLocated] = useState(false);
+interface NominatimResult {
+  lat: string;
+  lon: string;
+  display_name: string;
+}
 
-  const locate = () => {
-    map.locate({ setView: true, maxZoom: 12 });
-    setLocated(true);
-    setTimeout(() => setLocated(false), 2000);
+function spotColor(waterType: string) {
+  if (waterType === 'salt') return '#0284c7';
+  if (waterType === 'fresh') return '#16a34a';
+  return '#7c3aed';
+}
+
+// Convert our [lat, lng] zone coords to GeoJSON FeatureCollection with [lng, lat] polygon
+function zoneToGeoJson(coords: [number, number][]) {
+  const ring = [
+    ...coords.map(([lat, lng]) => [lng, lat] as [number, number]),
+    [coords[0][1], coords[0][0]] as [number, number],
+  ];
+  return {
+    type: 'FeatureCollection' as const,
+    features: [{
+      type: 'Feature' as const,
+      properties: {},
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [ring],
+      },
+    }],
   };
-
-  return (
-    <button
-      onClick={locate}
-      className={`absolute bottom-36 right-4 z-[1000] w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-colors ${located ? 'bg-ocean-500 text-white' : 'bg-white text-ocean-600'}`}
-    >
-      <Navigation className="w-5 h-5" />
-    </button>
-  );
 }
 
 type FilterType = 'all' | 'salt' | 'fresh' | 'brackish';
@@ -85,12 +59,24 @@ export default function MapPage() {
   const [showZones, setShowZones] = useState(true);
   const [weather] = useState<WeatherData>(MOCK_WEATHER);
 
-  useEffect(() => {
-    // In a real app, fetch DMI weather API here
-    // fetch(`https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?...`)
-  }, []);
+  // Controlled map state
+  const [center, setCenter] = useState<[number, number]>([56.26, 9.5]);
+  const [zoom, setZoom] = useState(7);
+
+  // Measure wrapper so pigeon-maps gets explicit pixel dimensions
+  const mapWrapperRef = useRef<HTMLDivElement>(null);
+  const [mapDims, setMapDims] = useState({ width: 0, height: 0 });
+
+  // Search
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<NominatimResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const filteredSpots = filter === 'all' ? fishingSpots : fishingSpots.filter(s => s.waterType === filter);
+  const isFav = (id: string) => user?.favoriteSpots.includes(id) ?? false;
 
   const filterLabels: { key: FilterType; label: string; color: string }[] = [
     { key: 'all', label: 'Alle', color: 'bg-slate-700 text-white' },
@@ -99,26 +85,80 @@ export default function MapPage() {
     { key: 'brackish', label: '🌀 Brakvand', color: 'bg-purple-500 text-white' },
   ];
 
-  const isFav = (spotId: string) => user?.favoriteSpots.includes(spotId) ?? false;
+  const doSearch = async (q: string) => {
+    if (q.length < 2) { setResults([]); return; }
+    setSearching(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&countrycodes=dk&format=json&limit=5`,
+        { headers: { 'Accept-Language': 'da' } }
+      );
+      setResults(await res.json());
+    } catch { setResults([]); }
+    finally { setSearching(false); }
+  };
+
+  const handleQueryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value;
+    setQuery(v);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => doSearch(v), 350);
+  };
+
+  const handleSelect = (r: NominatimResult) => {
+    const name = r.display_name.split(',')[0];
+    setQuery(name);
+    setResults([]);
+    setSearchOpen(false);
+    setCenter([parseFloat(r.lat), parseFloat(r.lon)]);
+    setZoom(13);
+  };
+
+  const handleClear = () => { setQuery(''); setResults([]); setSearchOpen(false); inputRef.current?.focus(); };
+
+  const locate = () => {
+    navigator.geolocation?.getCurrentPosition(pos => {
+      setCenter([pos.coords.latitude, pos.coords.longitude]);
+      setZoom(12);
+    });
+  };
+
+  useEffect(() => {
+    const el = mapWrapperRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      setMapDims({ width: Math.round(width), height: Math.round(height) });
+    });
+    ro.observe(el);
+    setMapDims({ width: el.offsetWidth, height: el.offsetHeight });
+    return () => ro.disconnect();
+  }, []);
+
+  // Close search dropdown when clicking outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!(e.target as Element).closest('[data-search]')) setSearchOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   return (
-    <div className="relative w-full h-full flex flex-col">
+    <div className="relative w-full flex-1 min-h-0 flex flex-col">
       {/* Weather bar */}
       <div className="bg-gradient-to-r from-ocean-600 to-ocean-500 text-white px-4 py-2 flex items-center gap-4 text-sm overflow-x-auto shrink-0">
         <span className="text-lg">{weather.icon}</span>
         <span className="font-medium whitespace-nowrap">{weather.condition}</span>
         <div className="flex items-center gap-1 whitespace-nowrap">
-          <Thermometer className="w-3.5 h-3.5" />
-          <span>{weather.temp}°C</span>
+          <Thermometer className="w-3.5 h-3.5" /><span>{weather.temp}°C</span>
         </div>
         <div className="flex items-center gap-1 whitespace-nowrap">
-          <Wind className="w-3.5 h-3.5" />
-          <span>{weather.windSpeed} m/s {weather.windDir}</span>
+          <Wind className="w-3.5 h-3.5" /><span>{weather.windSpeed} m/s {weather.windDir}</span>
         </div>
         {weather.waterTemp && (
           <div className="flex items-center gap-1 whitespace-nowrap">
-            <Droplets className="w-3.5 h-3.5" />
-            <span>Vand: {weather.waterTemp}°C</span>
+            <Droplets className="w-3.5 h-3.5" /><span>Vand: {weather.waterTemp}°C</span>
           </div>
         )}
         <span className="ml-auto text-xs opacity-75 whitespace-nowrap">DMI live</span>
@@ -144,84 +184,141 @@ export default function MapPage() {
         </button>
       </div>
 
-      {/* Map */}
-      <div className="flex-1 relative">
-        <MapContainer
-          center={[56.26, 9.5]}
-          zoom={7}
-          className="w-full h-full"
-          zoomControl={true}
+      {/* Map area */}
+      <div ref={mapWrapperRef} className="flex-1 relative min-h-0" style={{ overflow: 'hidden' }}>
+        {mapDims.height > 0 && (
+        <Map
+          center={center}
+          zoom={zoom}
+          width={mapDims.width}
+          height={mapDims.height}
+          onBoundsChanged={({ center: c, zoom: z }) => { setCenter(c); setZoom(z); }}
+          attribution={false}
+          animate
         >
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
-
           {/* Protected zones */}
           {showZones && protectedZones.map(zone => (
-            <Polygon
+            <GeoJson
               key={zone.id}
-              positions={zone.coordinates}
-              pathOptions={{
-                color: '#ef4444',
-                fillColor: '#ef4444',
+              data={zoneToGeoJson(zone.coordinates)}
+              svgAttributes={{
+                fill: '#ef4444',
                 fillOpacity: 0.15,
-                weight: 2,
-                dashArray: '6 4',
+                stroke: '#ef4444',
+                strokeWidth: 2,
+                strokeDasharray: '6 4',
               }}
-            >
-              <Popup>
-                <div className="p-1">
-                  <div className="font-semibold text-red-600 flex items-center gap-1">
-                    <AlertTriangle className="w-4 h-4" />
-                    {zone.name}
-                  </div>
-                  <p className="text-xs text-slate-600 mt-1">{zone.description}</p>
-                  <span className="inline-block mt-1 px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs">{zone.type}</span>
-                </div>
-              </Popup>
-            </Polygon>
+            />
           ))}
 
-          {/* Fishing spots */}
+          {/* Fishing spot markers */}
           {filteredSpots.map(spot => (
-            <Marker
+            <Overlay
               key={spot.id}
-              position={[spot.lat, spot.lng]}
-              icon={createSpotIcon(spot.waterType, isFav(spot.id))}
-              eventHandlers={{ click: () => setSelectedSpot(spot) }}
+              anchor={[spot.lat, spot.lng]}
+              offset={[18, 18]}
             >
-              <Popup>
-                <div className="p-1 min-w-[180px]">
-                  <div className="font-semibold text-slate-800">{spot.name}</div>
-                  <div className="flex items-center gap-1 mt-0.5">
-                    {'⭐'.repeat(Math.floor(spot.rating))}
-                    <span className="text-xs text-slate-500">{spot.rating}</span>
-                  </div>
-                  <p className="text-xs text-slate-600 mt-1">{spot.description}</p>
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {spot.fish.slice(0, 3).map(fId => (
-                      <span key={fId} className="px-1.5 py-0.5 bg-ocean-100 text-ocean-700 rounded text-xs">
-                        {getFishById(fId)?.emoji} {getFishById(fId)?.name}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </Popup>
-            </Marker>
+              <button
+                onClick={() => setSelectedSpot(spot)}
+                style={{
+                  background: 'white',
+                  border: `3px solid ${spotColor(spot.waterType)}`,
+                  borderRadius: '50%',
+                  width: 36,
+                  height: 36,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 16,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                  cursor: 'pointer',
+                  padding: 0,
+                  flexShrink: 0,
+                }}
+              >
+                {isFav(spot.id) ? '⭐' : '🎣'}
+              </button>
+            </Overlay>
           ))}
+        </Map>
+        )}
 
-          <LocationButton />
-        </MapContainer>
+        {/* Search bar */}
+        <div className="absolute top-3 left-4 right-4 z-50" data-search>
+          <div className="relative">
+            <div className="flex items-center bg-white rounded-2xl shadow-lg border border-slate-100 overflow-hidden">
+              <Search className="w-4 h-4 text-slate-400 ml-3 shrink-0" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={handleQueryChange}
+                onFocus={() => setSearchOpen(true)}
+                placeholder="Søg adresse eller by..."
+                className="flex-1 px-3 py-3 text-sm text-slate-800 placeholder-slate-400 outline-none bg-transparent"
+              />
+              {searching && <div className="w-4 h-4 border-2 border-ocean-400 border-t-transparent rounded-full animate-spin mr-3" />}
+              {query && !searching && (
+                <button onClick={handleClear} className="p-2 mr-1 text-slate-400 hover:text-slate-600">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            {searchOpen && results.length > 0 && (
+              <div className="absolute top-full mt-1 left-0 right-0 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden">
+                {results.map((r, i) => {
+                  const parts = r.display_name.split(', ');
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => handleSelect(r)}
+                      className="w-full text-left px-4 py-3 hover:bg-ocean-50 transition-colors border-b border-slate-50 last:border-0"
+                    >
+                      <div className="text-sm font-medium text-slate-800 flex items-center gap-2">
+                        <MapPin className="w-3.5 h-3.5 text-ocean-500 shrink-0" />
+                        {parts[0]}
+                      </div>
+                      {parts[1] && <div className="text-xs text-slate-400 mt-0.5 ml-5">{parts.slice(1, 3).join(', ')}</div>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Zoom + Location controls */}
+        <div className="absolute bottom-48 right-4 z-50 flex flex-col gap-1">
+          <button
+            onClick={() => setZoom(z => Math.min(z + 1, 19))}
+            className="w-12 h-12 bg-white rounded-2xl shadow-lg flex items-center justify-center text-ocean-600 hover:bg-ocean-50 transition-colors active:scale-95"
+          >
+            <Plus className="w-6 h-6" strokeWidth={2.5} />
+          </button>
+          <button
+            onClick={() => setZoom(z => Math.max(z - 1, 1))}
+            className="w-12 h-12 bg-white rounded-2xl shadow-lg flex items-center justify-center text-ocean-600 hover:bg-ocean-50 transition-colors active:scale-95"
+          >
+            <Minus className="w-6 h-6" strokeWidth={2.5} />
+          </button>
+        </div>
+        <button
+          onClick={locate}
+          className="absolute bottom-36 right-4 z-50 w-12 h-12 bg-white rounded-full shadow-lg flex items-center justify-center text-ocean-600 hover:bg-ocean-50 transition-colors active:scale-95"
+        >
+          <Navigation className="w-5 h-5" />
+        </button>
 
         {/* Spot detail panel */}
         {selectedSpot && (
-          <div className="absolute bottom-4 left-4 right-4 z-[1000] bg-white rounded-3xl shadow-2xl p-4">
+          <div className="absolute bottom-4 left-4 right-4 z-50 bg-white rounded-3xl shadow-2xl p-4">
             <div className="flex items-start justify-between">
               <div className="flex-1">
                 <h3 className="font-bold text-slate-800 text-base">{selectedSpot.name}</h3>
                 <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-slate-500">{selectedSpot.difficulty === 'let' ? '🟢 Let' : selectedSpot.difficulty === 'middel' ? '🟡 Middel' : '🔴 Svær'}</span>
+                  <span className="text-xs text-slate-500">
+                    {selectedSpot.difficulty === 'let' ? '🟢 Let' : selectedSpot.difficulty === 'middel' ? '🟡 Middel' : '🔴 Svær'}
+                  </span>
                   <span className="text-xs text-slate-400">·</span>
                   <span className="text-yellow-500 text-xs">{'⭐'.repeat(Math.floor(selectedSpot.rating))} {selectedSpot.rating}</span>
                 </div>
